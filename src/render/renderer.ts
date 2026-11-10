@@ -12,14 +12,12 @@ import { clockLabel } from '../sim/clock';
 import { known } from '../sim/intel';
 import { coneOf } from '../sim/perception';
 import type { Action, Sim } from '../sim/sim';
-import type { Solid, Zone } from '../sim/types';
+import type { Light, Solid } from '../sim/types';
 import { PAL } from './palette';
-import { drawFigure, drawWren } from './figures';
-
-/** How far up the screen a metre of height is drawn. */
-const ZK = 0.5;
-/** Station walls and furniture are drawn as a low cutaway. */
-const CUTAWAY: Partial<Record<Solid['kind'], number>> = { wall: 1.3, pillar: 1.6, kiosk: 1.4, board: 0.9, machine: 1, locker: 1.1, train: 2.2, fence: 0.7 };
+import { drawFigure, drawWren, drawPersonShadow } from './figures';
+import { Materials } from './materials';
+import { drawDressing, drawFloor, drawShadow, drawSolid, drawWallDressing, visualHeight } from './scenery';
+import { stationDressing, type Dressing } from '../content/dressing';
 
 interface Shout { id: string; text: string; until: number; hostile: boolean }
 
@@ -37,10 +35,30 @@ export class Renderer {
   reducedMotion = false;
   private time = 0;
 
-  constructor(private canvas: HTMLCanvasElement) {
+  private mats: Materials;
+  private dressing: Dressing[] = stationDressing().items;
+  private grain: CanvasPattern | null = null;
+  private vignette: CanvasGradient | null = null;
+
+  constructor(private canvas: HTMLCanvasElement, assetBase = './') {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
     this.dark = document.createElement('canvas');
     this.dctx = this.dark.getContext('2d')!;
+    this.mats = new Materials(this.ctx, assetBase);
+    // Film grain: one small noise tile, drawn over everything at low strength.
+    const g = document.createElement('canvas');
+    g.width = g.height = 128;
+    const gc = g.getContext('2d')!;
+    const img = gc.createImageData(128, 128);
+    let seed = 7;
+    for (let i = 0; i < img.data.length; i += 4) {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      const v = seed >>> 24;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    gc.putImageData(img, 0, 0);
+    this.grain = this.ctx.createPattern(g, 'repeat');
   }
 
   resize(w: number, h: number): void {
@@ -50,8 +68,9 @@ export class Renderer {
     this.canvas.height = Math.round(h * this.dpr);
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
-    // About 15 metres across the short side: close enough to read a person.
-    this.base = clamp(Math.min(w, h) / 15, 22, 44);
+    // About 12 metres across the short side: close enough to read a person.
+    this.base = clamp(Math.min(w, h) / 12, 26, 52);
+    this.vignette = null;
     this.dark.width = Math.ceil(w / 3);
     this.dark.height = Math.ceil(h / 3);
   }
@@ -92,23 +111,29 @@ export class Renderer {
     const t = sim.t;
     const w = sim.world;
 
-    // Floors.
-    for (const z of w.def.zones) if (vis(z)) this.floor(z, view);
+    const pxw = 1 / s;
+    // Floors, then what lies on them.
+    for (const z of w.def.zones) if (vis(z)) drawFloor(ctx, z, this.mats, pxw);
+    drawDressing(ctx, this.dressing, view, pxw, this.time, this.reducedMotion);
 
-    // Shadows under everything solid.
-    ctx.fillStyle = PAL.shadow;
-    for (const so of w.def.solids) {
-      if (!active(so, t) || !vis(so)) continue;
-      const h = Math.min(so.z, CUTAWAY[so.kind] ?? so.z);
-      ctx.fillRect(so.x + 0.15, so.y + 0.15, so.w + h * 0.12, so.h + h * 0.08);
-    }
+    // Contact shadows, so things sit on the ground.
+    for (const so of w.def.solids) if (active(so, t) && vis(so)) drawShadow(ctx, so);
+    for (const a of sim.agents) if (a.live && vis({ x: a.pos.x - 1, y: a.pos.y - 1, w: 2, h: 2 })) drawPersonShadow(ctx, lerp(a.prev.x, a.pos.x, alpha), lerp(a.prev.y, a.pos.y, alpha), this.nearLight(sim, a.pos));
+    drawPersonShadow(ctx, px, py, this.nearLight(sim, p.pos));
 
-    // Depth-sorted solids and people.
+    // Depth-sorted solids and people. Anything standing between the camera
+    // and Wren goes see-through, so she is never lost behind a wall.
     type D = { y: number; draw: () => void };
     const list: D[] = [];
     for (const so of w.def.solids) {
       if (!active(so, t) || !vis(so)) continue;
-      list.push({ y: so.y + so.h, draw: () => this.solid(so, t) });
+      const hides = px > so.x - 0.3 && px < so.x + so.w + 0.3 && py < so.y + so.h && py > so.y - visualHeight(so) - 0.6;
+      const roll = so.kind === 'train' && so.from !== undefined && !this.reducedMotion ? Math.max(0, so.from + 4 - t) ** 2 * 3 : 0;
+      list.push({ y: so.y + so.h, draw: () => {
+        if (hides) ctx.globalAlpha = 0.42;
+        drawSolid(ctx, so, this.mats, pxw, roll, this.time);
+        ctx.globalAlpha = 1;
+      } });
     }
     for (const j of sim.junctions) {
       list.push({ y: j.def.y + 0.3, draw: () => this.junction(sim, j.def.id) });
@@ -120,6 +145,7 @@ export class Renderer {
     list.push({ y: py, draw: () => drawWren(ctx, px, py, lerpAngle(p.prevFacing, p.facing, alpha), p, this.time, s) });
     list.sort((a, b) => a.y - b.y);
     for (const d of list) d.draw();
+    drawWallDressing(ctx, this.dressing, view, sim.t * 6);
 
     // Darkness, with the lamps cut out of it.
     this.lighting(sim, view);
@@ -139,90 +165,50 @@ export class Renderer {
       ctx.fillRect(0, 0, this.W, this.H);
       this.flagFlash = Math.max(0, this.flagFlash - frameDt * 1.5);
     }
+    this.post();
     void clockLabel;
   }
 
-  // ---------------------------------------------------------------- floors
-
-  private floor(z: Zone, view: { x: number; y: number; w: number; h: number }): void {
-    const ctx = this.ctx;
-    const col: Record<Zone['floor'], string> = {
-      asphalt: PAL.asphalt, pavement: PAL.pavement, tile: PAL.tile, platform: PAL.platform,
-      track: PAL.track, staff: PAL.staff, bridge: PAL.platform, alley: PAL.alley,
-    };
-    ctx.fillStyle = col[z.floor];
-    ctx.fillRect(z.x, z.y, z.w, z.h);
-    const x0 = Math.max(z.x, Math.floor(view.x)), x1 = Math.min(z.x + z.w, view.x + view.w);
-    const y0 = Math.max(z.y, Math.floor(view.y)), y1 = Math.min(z.y + z.h, view.y + view.h);
-    const px = 1 / this.scale;
-    if (z.floor === 'tile' || z.floor === 'staff') {
-      ctx.strokeStyle = PAL.tileLine;
-      ctx.lineWidth = px;
-      ctx.beginPath();
-      const step = z.floor === 'tile' ? 1.5 : 1;
-      for (let x = Math.ceil(x0 / step) * step; x < x1; x += step) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
-      for (let y = Math.ceil(y0 / step) * step; y < y1; y += step) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
-      ctx.stroke();
-    } else if (z.floor === 'pavement') {
-      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-      ctx.lineWidth = px;
-      ctx.beginPath();
-      for (let x = Math.ceil(x0 / 2) * 2; x < x1; x += 2) { ctx.moveTo(x, z.y); ctx.lineTo(x, z.y + z.h); }
-      ctx.stroke();
-      ctx.fillStyle = '#4a4640';
-      ctx.fillRect(z.x, z.y, z.w, 0.25); // kerb
-    } else if (z.floor === 'asphalt') {
-      ctx.strokeStyle = 'rgba(233,226,207,0.35)';
-      ctx.lineWidth = 0.15;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(x0, z.y + z.h / 2); ctx.lineTo(x1, z.y + z.h / 2); ctx.stroke();
-      ctx.setLineDash([]);
-    } else if (z.floor === 'track') {
-      ctx.fillStyle = PAL.sleeper;
-      for (let x = Math.ceil(x0 / 0.9) * 0.9; x < x1; x += 0.9) ctx.fillRect(x, z.y + 0.7, 0.35, z.h - 1.4);
-      ctx.fillStyle = PAL.rail;
-      ctx.fillRect(x0, z.y + 1.4, x1 - x0, 0.1);
-      ctx.fillRect(x0, z.y + z.h - 1.5, x1 - x0, 0.1);
-    } else if (z.floor === 'platform') {
-      // The yellow line nobody stands behind.
-      ctx.fillStyle = PAL.safetyLine;
-      if (z.id === 'p1') ctx.fillRect(z.x, z.y + z.h - 0.85, z.w, 0.18);
-      if (z.id === 'p2') { ctx.fillRect(z.x, z.y + 0.6, z.w, 0.18); ctx.fillRect(z.x, z.y + z.h - 0.8, z.w, 0.18); }
-      ctx.fillStyle = 'rgba(0,0,0,0.18)';
-      for (let x = Math.ceil(x0 / 3) * 3; x < x1; x += 3) ctx.fillRect(x, z.y, px, z.h);
-    }
+  /** A failing tube: mostly on, now and then it stutters. */
+  private flicker(L: Light): number {
+    if (!L.flicker || this.reducedMotion) return 1;
+    const t = this.time;
+    const n = Math.sin(t * 13.1) * Math.sin(t * 7.3 + 1) * Math.sin(t * 2.1);
+    return n > 0.55 ? 0.25 : n > 0.4 ? 0.7 : 1;
   }
 
-  // ---------------------------------------------------------------- solids
+  /** The nearest strong light to a point: shadows fall away from it. */
+  private nearLight(sim: Sim, p: Vec2): Light | null {
+    let best: Light | null = null, bd = Infinity;
+    for (const L of sim.world.def.lights) {
+      if (L.strength < 0.3) continue;
+      const d = (L.x - p.x) ** 2 + (L.y - p.y) ** 2;
+      if (d < bd && d < L.r * L.r) { bd = d; best = L; }
+    }
+    return best;
+  }
 
-  private solid(so: Solid, t: number): void {
+  /** Lens: vignette and grain. */
+  private post(): void {
     const ctx = this.ctx;
-    const h = Math.min(so.z, CUTAWAY[so.kind] ?? so.z) * ZK;
-    let x = so.x;
-    if (so.kind === 'train' && so.from !== undefined && !this.reducedMotion) {
-      // The Loop local rolls in rather than appearing.
-      x += Math.max(0, so.from + 4 - t) ** 2 * 3;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    if (!this.vignette) {
+      const r = Math.hypot(this.W, this.H) / 2;
+      this.vignette = ctx.createRadialGradient(this.W / 2, this.H / 2, r * 0.45, this.W / 2, this.H / 2, r);
+      this.vignette.addColorStop(0, 'rgba(0,0,0,0)');
+      this.vignette.addColorStop(1, 'rgba(0,0,0,0.55)');
     }
-    const top = topColor(so), side = sideColor(so);
-    ctx.fillStyle = side;
-    ctx.fillRect(x, so.y + so.h - h, so.w, h);
-    ctx.fillStyle = top;
-    ctx.fillRect(x, so.y - h, so.w, so.h);
-    if (so.kind === 'building' || so.kind === 'train') {
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 1 / this.scale;
-      ctx.strokeRect(x, so.y - h, so.w, so.h);
-    }
-    if (so.kind === 'train') {
-      // Windows along the side and a roof seam.
-      ctx.fillStyle = so.label === 'HALVARD TRUST' ? '#0f1d18' : '#2a1012';
-      for (let wx = x + 1.5; wx < x + so.w - 1.5; wx += 2.4) ctx.fillRect(wx, so.y + so.h - h + 0.25, 1.4, h * 0.45);
-      ctx.fillStyle = 'rgba(255,255,255,0.06)';
-      ctx.fillRect(x, so.y - h + so.h / 2 - 0.1, so.w, 0.2);
-    }
-    if (so.kind === 'bench') {
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      for (let bx = so.x + 0.9; bx < so.x + so.w; bx += 2) ctx.fillRect(bx, so.y - h, 0.08, so.h);
+    ctx.fillStyle = this.vignette;
+    ctx.fillRect(0, 0, this.W, this.H);
+    if (this.grain) {
+      ctx.save();
+      ctx.globalAlpha = 0.05;
+      ctx.globalCompositeOperation = 'overlay';
+      const o = this.reducedMotion ? 0 : Math.floor(this.time * 24) * 37 % 128;
+      ctx.translate(-o, -((o * 3) % 128));
+      ctx.fillStyle = this.grain;
+      ctx.fillRect(0, 0, this.W + 128, this.H + 128);
+      ctx.restore();
     }
   }
 
@@ -344,14 +330,15 @@ export class Renderer {
     d.setTransform(1, 0, 0, 1, 0, 0);
     d.globalCompositeOperation = 'source-over';
     d.clearRect(0, 0, dw, dh);
-    d.fillStyle = 'rgba(6,6,10,0.8)';
+    d.fillStyle = 'rgba(6,9,18,0.88)';
     d.fillRect(0, 0, dw, dh);
     d.setTransform(s, 0, 0, s, dw / 2 - this.cam.x * s, dh / 2 - this.cam.y * s);
     d.globalCompositeOperation = 'destination-out';
     for (const L of sim.world.def.lights) {
       if (L.x + L.r < view.x || L.x - L.r > view.x + view.w || L.y + L.r < view.y || L.y - L.r > view.y + view.h) continue;
+      const fl = this.flicker(L);
       const g = d.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r);
-      g.addColorStop(0, `rgba(0,0,0,${Math.min(1, L.strength * 1.3)})`);
+      g.addColorStop(0, `rgba(0,0,0,${Math.min(1, L.strength * 1.3 * fl)})`);
       g.addColorStop(0.5, `rgba(0,0,0,${Math.min(1, L.strength * 0.8)})`);
       g.addColorStop(1, 'rgba(0,0,0,0)');
       d.fillStyle = g;
@@ -366,11 +353,12 @@ export class Renderer {
     ctx.setTransform(k, 0, 0, k, (this.W / 2 - this.cam.x * this.scale) * this.dpr, (this.H / 2 - this.cam.y * this.scale) * this.dpr);
     ctx.globalCompositeOperation = 'lighter';
     for (const L of sim.world.def.lights) {
-      if (L.tone === 'fluoro') continue;
       if (L.x + L.r < view.x || L.x - L.r > view.x + view.w || L.y + L.r < view.y || L.y - L.r > view.y + view.h) continue;
-      const g = ctx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r * 0.8);
-      g.addColorStop(0, L.tone === 'sign' ? 'rgba(232,194,122,0.10)' : 'rgba(242,163,58,0.11)');
-      g.addColorStop(1, 'rgba(242,163,58,0)');
+      const col = L.color ?? (L.tone === 'sodium' ? 'rgba(242,163,58,1)' : L.tone === 'sign' ? 'rgba(232,194,122,1)' : 'rgba(205,225,215,1)');
+      const a = (L.tone === 'sodium' ? 0.16 : L.tone === 'fluoro' ? 0.05 : L.tone === 'window' ? 0.2 : 0.24) * this.flicker(L);
+      const g = ctx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r * 0.85);
+      g.addColorStop(0, col.replace(/,1\)$/, `,${a})`));
+      g.addColorStop(1, col.replace(/,1\)$/, ',0)'));
       ctx.fillStyle = g;
       ctx.fillRect(L.x - L.r, L.y - L.r, L.r * 2, L.r * 2);
     }
@@ -511,18 +499,6 @@ export class Renderer {
       ctx.fillStyle = PAL.ink;
       ctx.fillText(sh.text, x + 8, y + 11, 210);
     }
-    // The departure board and Dee's sign, when close enough to read.
-    if (this.scale > 20) {
-      const b = this.toScreen({ x: 50, y: 25.1 - 0.9 * ZK });
-      ctx.font = `700 ${Math.round(this.scale * 0.42)}px "Big Shoulders Display", "Arial Narrow", sans-serif`;
-      ctx.fillStyle = PAL.sign;
-      ctx.textAlign = 'center';
-      ctx.fillText('23:46  NIGHT MAIL  P1', b.x, b.y);
-      const k = this.toScreen({ x: 33, y: 26.6 - 1.4 * ZK });
-      ctx.fillStyle = PAL.paper;
-      ctx.fillText("DEE'S", k.x, k.y);
-      ctx.textAlign = 'left';
-    }
   }
 }
 
@@ -539,30 +515,6 @@ function eye(ctx: CanvasRenderingContext2D, x: number, y: number, open: number, 
 
 function active(s: Solid, t: number): boolean {
   return (s.from === undefined || t >= s.from) && (s.until === undefined || t < s.until);
-}
-
-function topColor(s: Solid): string {
-  if (s.tint) return shade(s.tint, 0.12);
-  switch (s.kind) {
-    case 'wall': return PAL.wallTop;
-    case 'pillar': return '#8a8174';
-    case 'bench': return '#5a4a3a';
-    case 'barrier': return '#8c8c86';
-    case 'kiosk': return '#6a3a2a';
-    case 'machine': return '#3f5a6a';
-    case 'board': return '#1a1a18';
-    case 'fence': return '#6b6a64';
-    case 'bin': return '#3a4a3a';
-    case 'planter': return '#3e4a34';
-    case 'locker': return '#5a5f66';
-    case 'counter': return '#6a5a48';
-    default: return PAL.buildingTop;
-  }
-}
-
-function sideColor(s: Solid): string {
-  if (s.tint) return shade(s.tint, -0.25);
-  return shade(topColor(s), -0.3);
 }
 
 export function shade(hex: string, f: number): string {

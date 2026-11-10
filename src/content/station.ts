@@ -11,6 +11,7 @@ import { at } from '../sim/clock';
 import type { AgentSpec, Appearance, Item, Pocket, Step } from '../sim/agentTypes';
 import type { CameraDef, Door, JunctionDef, Light, Poi, Solid, Zone } from '../sim/types';
 import type { WorldDef } from '../sim/world';
+import { stationDressing } from './dressing';
 
 const PI = Math.PI;
 const N = -PI / 2, S = PI / 2, E = 0, W = PI;
@@ -56,8 +57,8 @@ function buildSolids(): Solid[] {
   // The gateline: low barriers with five gates.
   let gx = 5;
   for (const gate of [20, 35, 50, 65, 80]) {
-    s.push(solid('barrier', gx, 47.6, gate - 0.8 - gx, 0.8, 1.1, false));
-    gx = gate + 0.8;
+    s.push(solid('barrier', gx, 47.6, gate - 1 - gx, 0.8, 1.1, false));
+    gx = gate + 1;
   }
   s.push(solid('barrier', gx, 47.6, 100 - gx, 0.8, 1.1, false));
   // Platform canopy columns and benches.
@@ -107,15 +108,17 @@ const doors: Door[] = [
 
 function buildLights(): Light[] {
   const L: Light[] = [];
-  for (let x = 7; x < 120; x += 14) L.push({ x, y: 17.5, r: 9, strength: 0.75, tone: 'sodium' });
+  for (let x = 7; x < 120; x += 14) L.push({ x, y: 17.5, r: 7.5, strength: 0.85, tone: 'sodium' });
   L.push({ x: 32, y: 6, r: 3.5, strength: 0.25, tone: 'sodium' });
-  for (let x = 15; x <= 90; x += 15) for (const y of [30, 44]) L.push({ x, y, r: 11, strength: 0.62, tone: 'fluoro' });
+  for (let x = 15; x <= 90; x += 15) for (const y of [30, 44]) L.push({ x, y, r: 8, strength: 0.58, tone: 'fluoro' });
   L.push({ x: 33, y: 29.5, r: 5, strength: 0.5, tone: 'sign' });
   L.push({ x: 50, y: 27, r: 6, strength: 0.35, tone: 'sign' });
   for (const [x, y] of [[108, 30], [108, 45]]) L.push({ x, y, r: 7, strength: 0.45, tone: 'fluoro' });
   // Platform 1 lamps. The one at x 74 has been out for a week.
-  for (let x = 14; x <= 110; x += 12) if (x !== 74) L.push({ x, y: 58.5, r: 8, strength: x === 110 ? 0.4 : 0.66, tone: 'sodium' });
-  for (let x = 20; x <= 90; x += 14) L.push({ x, y: 72, r: 8, strength: 0.55, tone: 'sodium' });
+  for (let x = 14; x <= 110; x += 12) if (x !== 74) L.push({ x, y: 58.5, r: 6.5, strength: x === 110 ? 0.45 : 0.8, tone: 'sodium', flicker: x === 98 });
+  // The Night Mail's windows spill warm light onto platform 1.
+  for (let x = 12; x < 112; x += 4.8) L.push({ x, y: 62.6, r: 2.8, strength: 0.22, tone: 'window', color: x > 86 ? 'rgba(200,230,200,1)' : 'rgba(250,200,130,1)' });
+  for (let x = 20; x <= 90; x += 14) L.push({ x, y: 72, r: 6.5, strength: 0.7, tone: 'sodium' });
   return L;
 }
 
@@ -171,13 +174,14 @@ function buildPois(): Poi[] {
 }
 
 export function stationWorld(): WorldDef {
+  const dressing = stationDressing();
   return {
     width: 120,
     height: 82,
-    solids: buildSolids(),
+    solids: [...buildSolids(), ...dressing.solids],
     zones,
     doors,
-    lights: buildLights(),
+    lights: [...buildLights(), ...dressing.lights],
     cameras,
     junctions,
     pois: buildPois(),

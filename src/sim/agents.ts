@@ -53,6 +53,8 @@ export interface Agent {
   stall: number;
   /** Closest they have got to the current goal. */
   bestDist: number;
+  /** Standing aside to let someone through, until this time. */
+  yieldUntil: number;
 
   // Theft
   item: Item | null;
@@ -80,9 +82,11 @@ export function makeAgent(spec: AgentSpec, world: World): Agent {
     suspicion: 0, stir: 0, glance: 0, nextGlance: 3, glanceDir: 0,
     lastSaw: -999, sawLook: null, sawPos: null, tailed: 0, confronted: false, distractedUntil: 0,
     item: spec.item ? { ...spec.item } : null, robbedAt: -1, robbedQuality: null, discoverAt: -1, discovered: false,
-    mode: 'routine', modeUntil: 0, target: null, searchPts: [], stall: 0, bestDist: Infinity,
+    mode: 'routine', modeUntil: 0, target: null, searchPts: [], stall: 0, bestDist: Infinity, yieldUntil: 0,
   };
 }
+
+const hashId = (id: string): number => { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0; return h; };
 
 export const isSecurity = (a: Agent): boolean => a.spec.role === 'guard' || a.spec.role === 'escort';
 
@@ -106,6 +110,7 @@ export function walkTo(a: Agent, goal: Vec2, speed: number, t: number, dt: numbe
     if (!a.path) return dist(a.pos, goal) < 0.6;
   }
   if (!a.path || a.path.length === 0) return dist(a.pos, goal) < 0.6;
+  if (t < a.yieldUntil) { a.vel.x = a.vel.y = 0; return false; }
   // Blocked by a crowd: close enough counts, otherwise find another way.
   const dg = dist(a.pos, goal);
   if (dg < a.bestDist - 0.3) { a.bestDist = dg; a.stall = 0; }
@@ -114,6 +119,8 @@ export function walkTo(a: Agent, goal: Vec2, speed: number, t: number, dt: numbe
     if (a.stall > 1.5) {
       a.stall = 0;
       if (dist(a.pos, goal) < 1.6) { a.path = null; a.vel.x = a.vel.y = 0; return true; }
+      // Head to head in a doorway: one of them stands aside for a moment.
+      a.yieldUntil = t + 0.6 + (hashId(a.id) % 7) * 0.15;
       a.path = null; a.pathGoal = null; a.repathAt = 0;
       return false;
     }

@@ -5,7 +5,7 @@ export interface Box { x: number; y: number; w: number; h: number }
 
 export type SolidKind =
   | 'building' | 'wall' | 'pillar' | 'train' | 'counter' | 'bench' | 'barrier'
-  | 'machine' | 'fence' | 'board' | 'locker' | 'bin' | 'planter' | 'vehicle' | 'kiosk';
+  | 'machine' | 'fence' | 'board' | 'locker' | 'bin' | 'planter' | 'vehicle' | 'kiosk' | 'shelter';
 
 export interface Solid extends Box {
   kind: SolidKind;
@@ -42,7 +42,7 @@ export interface Door extends Box {
   reader?: Vec2;
 }
 
-export interface Light { x: number; y: number; r: number; strength: number; tone: 'sodium' | 'fluoro' | 'sign' }
+export interface Light { x: number; y: number; r: number; strength: number; tone: 'sodium' | 'fluoro' | 'sign' | 'ad' | 'window' | 'screen'; color?: string; flicker?: boolean }
 
 export interface CameraDef {
   id: string;

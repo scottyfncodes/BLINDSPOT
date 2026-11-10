@@ -24,7 +24,7 @@ const touchDevice = matchMedia('(pointer: coarse)').matches;
 class Game {
   private canvas = document.getElementById('world') as HTMLCanvasElement;
   private ui = document.getElementById('ui')!;
-  private renderer = new Renderer(this.canvas);
+  private renderer = new Renderer(this.canvas, import.meta.env.BASE_URL);
   private audio = new Audio();
   private gestures = new Gestures();
   private keys = new Set<string>();
@@ -39,6 +39,7 @@ class Game {
   private dip: DipView | null = null;
   private lastHud = new Map<string, string>();
   private moved = 0;
+  private leadTimer = 0;
 
   constructor() {
     this.renderer.reducedMotion = this.reducedMotion;
@@ -214,7 +215,13 @@ class Game {
     const gaze = Math.round(Math.min(1, s.exposure) * 20) / 20;
     this.setHud('gaze', String(gaze), (n) => { n.style.setProperty('--g', String(gaze)); n.dataset.hot = String(gaze > 0.45); });
     const leadText = lead(s);
-    this.setHud('lead', leadText, (n) => { n.textContent = leadText; n.hidden = !leadText; });
+    this.setHud('lead', leadText, (n) => {
+      n.textContent = leadText; n.hidden = !leadText;
+      // A new lead reads in full, then folds to one line out of the way.
+      n.classList.remove('quiet');
+      clearTimeout(this.leadTimer);
+      this.leadTimer = window.setTimeout(() => n.classList.add('quiet'), 7000);
+    });
     this.setHud('hood', String(p.look.hood), (n) => (n.textContent = p.look.hood ? 'Hood down' : 'Hood up'));
     if (this.moved > 6) this.setHud('help', 'hide', (n) => n.classList.add('gone'));
     for (let i = 0; i < 2; i++) {
