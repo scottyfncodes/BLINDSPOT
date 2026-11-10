@@ -1,5 +1,6 @@
 /* BLINDSPOT interface. Tokens and rules: DESIGN.md. */
 :root {
+  color-scheme: dark;
   --night: #0e0d0c;
   --tape: #161513;
   --tape-edge: #2a2825;
